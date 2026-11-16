@@ -1,46 +1,57 @@
 from http.server import BaseHTTPRequestHandler
-import qrcode
 import io
+import logging
 import urllib.parse
+
+import qrcode
+from qrcode.exceptions import DataOverflowError
+
+
+logger = logging.getLogger(__name__)
+
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            # Analizar la URL y los parámetros de consulta
             parsed_path = urllib.parse.urlparse(self.path)
             query_params = urllib.parse.parse_qs(parsed_path.query)
-            
-            # Obtener el parámetro 'text', por defecto usa un enlace de ejemplo
             text_to_encode = query_params.get('text', ['https://github.com'])[0]
-            
-            # Generar la imagen del código QR
+
             qr = qrcode.QRCode(
                 version=1,
                 error_correction=qrcode.constants.ERROR_CORRECT_M,
                 box_size=10,
                 border=4,
             )
-            qr.add_data(text_to_encode)
-            qr.make(fit=True)
-            
+            try:
+                qr.add_data(text_to_encode)
+                qr.make(fit=True)
+            except (DataOverflowError, ValueError):
+                self._send_text_response(
+                    400,
+                    "El texto es demasiado largo para generar un código QR.",
+                )
+                return
+
             img = qr.make_image(fill_color="black", back_color="white")
-            
-            # Guardar la imagen en un buffer de memoria en bytes
+
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
             img_bytes = buffered.getvalue()
-            
-            # Enviar la respuesta HTTP exitosa con la imagen PNG
+
             self.send_response(200)
-            self.send_header('Content-type', 'image/png')
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(img_bytes)))
             self.end_headers()
             self.wfile.write(img_bytes)
-            
-        except Exception as e:
-            # Manejo básico de errores
-            self.send_response(500)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(f"Error interno: {str(e)}".encode('utf-8'))
-        
-        return
+        except Exception:
+            logger.exception("No se pudo generar el código QR")
+            self._send_text_response(500, "Error interno al generar el código QR.")
+
+    def _send_text_response(self, status_code, message):
+        body = message.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
